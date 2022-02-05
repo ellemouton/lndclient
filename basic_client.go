@@ -115,7 +115,7 @@ func NewBasicConn(lndHost, tlsPath, macDir, network string,
 		}
 
 		// Now we append the macaroon credentials to the dial options.
-		cred := macaroons.NewMacaroonCredential(mac)
+		cred, _ := macaroons.NewMacaroonCredential(mac)
 		opts = append(opts, grpc.WithPerRPCCredentials(cred))
 		opts = append(opts, grpc.WithDefaultCallOptions(maxMsgRecvSize))
 	}

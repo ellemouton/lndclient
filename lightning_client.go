@@ -1315,11 +1315,12 @@ func (s *lightningClient) AddInvoice(ctx context.Context,
 	defer cancel()
 
 	rpcIn := &lnrpc.Invoice{
-		Memo:       in.Memo,
-		ValueMsat:  int64(in.Value),
-		Expiry:     in.Expiry,
-		CltvExpiry: in.CltvExpiry,
-		Private:    true,
+		Memo:            in.Memo,
+		ValueMsat:       int64(in.Value),
+		Expiry:          in.Expiry,
+		CltvExpiry:      in.CltvExpiry,
+		DescriptionHash: in.DescriptionHash,
+		Private:         true,
 	}
 
 	if in.Preimage != nil {
