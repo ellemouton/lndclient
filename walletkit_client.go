@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -107,6 +108,15 @@ type WalletKitClient interface {
 
 	PublishTransaction(ctx context.Context, tx *wire.MsgTx,
 		label string) error
+
+	// SubmitPackage submits a package of related transactions
+	// (topologically sorted, unconfirmed parents first and the child last)
+	// to lnd's chain backend for atomic validation and acceptance, letting
+	// a zero-fee v3/TRUC parent confirm via its fee-paying CPFP child. A nil
+	// maxFeeRate uses the node default; a non-nil value is the per-tx
+	// fee-rate ceiling in BTC/kvB (0 disables the limit).
+	SubmitPackage(ctx context.Context, txns []*wire.MsgTx,
+		maxFeeRate *float64) (*btcjson.SubmitPackageResult, error)
 
 	SendOutputs(ctx context.Context, outputs []*wire.TxOut,
 		feeRate chainfee.SatPerKWeight,
@@ -523,6 +533,72 @@ func (m *walletKitClient) PublishTransaction(ctx context.Context,
 	})
 
 	return err
+}
+
+func (m *walletKitClient) SubmitPackage(ctx context.Context,
+	txns []*wire.MsgTx,
+	maxFeeRate *float64) (*btcjson.SubmitPackageResult, error) {
+
+	rawTxs := make([][]byte, 0, len(txns))
+	for _, tx := range txns {
+		var buf bytes.Buffer
+		if err := tx.Serialize(&buf); err != nil {
+			return nil, err
+		}
+
+		rawTxs = append(rawTxs, buf.Bytes())
+	}
+
+	rpcCtx, cancel := context.WithTimeout(ctx, m.timeout)
+	defer cancel()
+
+	// maxFeeRate is optional: a nil value lets lnd use the node default,
+	// while a non-nil value (including 0, meaning no limit) is passed
+	// through unchanged.
+	rpcCtx = m.walletKitMac.WithMacaroonAuth(rpcCtx)
+	resp, err := m.client.SubmitPackage(rpcCtx, &walletrpc.SubmitPackageRequest{
+		RawTxs:     rawTxs,
+		MaxFeeRate: maxFeeRate,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Map the proto response back to the btcjson result the broadcaster
+	// expects.
+	result := &btcjson.SubmitPackageResult{
+		PackageMsg: resp.PackageMsg,
+		TxResults: make(
+			map[string]btcjson.SubmitPackageTxResult,
+			len(resp.TxResults),
+		),
+	}
+	for _, replaced := range resp.ReplacedTransactions {
+		hash, err := chainhash.NewHashFromStr(replaced)
+		if err != nil {
+			return nil, err
+		}
+
+		result.ReplacedTransactions = append(
+			result.ReplacedTransactions, *hash,
+		)
+	}
+	for wtxid, txResult := range resp.TxResults {
+		txid, err := chainhash.NewHashFromStr(txResult.Txid)
+		if err != nil {
+			return nil, err
+		}
+
+		entry := btcjson.SubmitPackageTxResult{TxID: *txid}
+		if txResult.Error != "" {
+			errStr := txResult.Error
+			entry.Error = &errStr
+		}
+
+		result.TxResults[wtxid] = entry
+	}
+
+	return result, nil
 }
 
 func (m *walletKitClient) SendOutputs(ctx context.Context,
